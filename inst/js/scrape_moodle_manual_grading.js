@@ -1,5 +1,5 @@
 responses = [];
-$('.essay').each(function(idx) {
+$('.que').each(function(idx) {
   let container = $(this);
   let parent = container.prevAll('h4').first().text();
 	let match = /Attempt number (\d+) for (.+)$/.exec(parent);
@@ -7,6 +7,7 @@ $('.essay').each(function(idx) {
   let essay = (
     container.find('textarea.qtype_essay_response').val()
     || container.find('div.qtype_essay_response').text()
+    || container.find('.answer input').val()
     );
   responses.push({name, attempt, essay});
 });
