@@ -1,5 +1,6 @@
 #' @importFrom rlang .data
-load_responses <- function(response_dir, question_type = NULL, default_type = "py") {
+#' @export
+load_moodle_responses <- function(response_dir, question_type = NULL, default_type = "py") {
   if (is.null(question_type)) {
     question_type <- dplyr::tibble(
       question_num = integer(0),
