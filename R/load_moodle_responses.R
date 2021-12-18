@@ -17,7 +17,7 @@ load_moodle_responses <- function(response_dir, question_type = NULL, default_ty
     dplyr::select(-.data$filename) |>
     tidyr::unnest_longer(.data$responses) |>
     tidyr::unnest_wider(.data$responses) |>
-    dplyr::mutate(id = NA_integer_, attempt = get0("attempt", ifnotfound = 1L)) |> # we didn't get these in the import.
+    dplyr::mutate(id = NA_character_) |> # Moodle doesn't easily provide the student id on this page.
     dplyr::rename(student = .data$name, contents = .data$essay, attempt_num = .data$attempt) |>
     dplyr::arrange(.data$question_num) |>
     # Label question types
