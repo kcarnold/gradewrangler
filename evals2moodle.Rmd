@@ -1,0 +1,141 @@
+---
+title: "Evaluations To Moodle"
+author: "K Arnold"
+date: "12/20/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+## Load evaluation CSVs
+
+Configuration:
+
+```{r}
+root_dir <- "~/Courses/cs106/student_data/21fa/quiz11"
+gradescope_dir <- file.path(root_dir, "gradescopes")
+```
+
+Gradescope uses an odd format for CSVs.
+
+```{r}
+gradescope_files <- withr::with_dir(gradescope_dir, {
+  Sys.glob("*.csv")})
+```
+
+```{r}
+gradescopes <- tibble(filename = gradescope_files) %>% 
+  rowwise() %>% 
+  mutate(contents = list(read_file(file.path(gradescope_dir, filename)))) %>% 
+  ungroup() %>% 
+  separate(filename, into = c("idx", "question"), sep = "_", extra = "merge") %>% 
+  mutate(idx = as.numeric(idx), question = str_sub(question, end = -5L)) %>%  # Trim the trailing ".csv"
+  mutate(question = str_replace(question, "(Exercise)_(\\d+)", "\\1 \\2")) %>% 
+  arrange(idx)
+```
+
+```{r}
+gradescope_data <- gradescopes %>% 
+  rowwise() %>% 
+  mutate(line = stringi::stri_split_lines(contents)) %>% 
+  select(-contents) %>% 
+  unnest_longer(line) %>% 
+  filter(!str_starts(line, "Point Values|Rubric Numbers|Rubric Type|Scoring Method")) %>% 
+  group_by(idx, question) %>% 
+  summarise(contents = list(read_csv(paste0(line, collapse = "\n"), show_col_types = FALSE)), .groups = "drop")
+```
+
+
+```{r}
+consolidate_gradescope_table <- function(gs) {
+  gs %>%
+    select(-c(1, 2), -SID, -Email, -`Submission Time`, -Grader, -Tags, -Adjustment) %>% 
+    mutate(Name = paste0(`First Name`, ' ', `Last Name`)) %>% 
+    select(-`First Name`, -`Last Name`) %>% 
+    pivot_longer(!c(Name, Score, Comments), names_to = "rubric") %>% 
+    group_by(Name) %>% 
+    summarize(Score = first(Score), comments = str_trim(
+      paste0(paste0('- ', rubric[value], collapse = "\n\n"), "\n\n", coalesce(first(Comments), ""), collapse = "\n\n")),
+      .groups = "drop") %>% 
+    mutate(comments = if_else(comments == "", "Good.", comments))
+}
+```
+
+## Make a spreadsheet of totals
+
+This is useful for homework assignments and other assignments where feedback is given at the *assignment* level.
+
+```{r}
+total_for_student <- gradescope_data %>% 
+  rowwise() %>% 
+  mutate(feedback = list(consolidate_gradescope_table(contents))) %>% 
+  unnest(feedback) %>% 
+  # Compute total max score
+  group_by(question) %>% mutate(max_score = max(Score)) %>%
+  group_by(Name) %>% 
+  arrange(idx, .by_group = TRUE) %>% 
+  summarize(total_score = sum(Score), comments = paste0('#### ', question, " (", Score, "/", max_score, ")\n\n", comments, collapse = "\n\n"))
+```
+
+```{r}
+if (FALSE) {
+  max_grade <- max(total_for_student2$total_score)
+  comments_joined_moodle <- read_csv(file.path(root_dir, "moodle-offline-grading.csv"), show_col_types = F) %>% 
+    left_join(moodle_names, by = c("Full name" = "moodle_name")) %>% 
+    mutate(Name = coalesce(roster_name, `Full name`)) %>% 
+    tidylog::full_join(total_for_student2, by = c("Name"))
+  # Abort if anyone was missing from Moodle.
+  stopifnot(nrow(comments_joined_moodle %>% filter(is.na(Identifier))) == 0)
+  
+  feedback_for_moodle <- comments_joined_moodle %>% 
+    rowwise() %>% 
+    mutate(Grade = round(100 * total_score / max_grade), `Feedback comments` = if (is.na(comments)) NA_character_ else markdown::renderMarkdown(text = comments)) %>% 
+    ungroup() %>% 
+    select(-total_score, -comments) %>% 
+    replace_na(list(Grade = 0, `Feedback comments` = "No submission; please reach out if you did submit."))
+  feedback_for_moodle %>% 
+    write_csv(file.path(root_dir, "moodle-graded.csv"))
+}
+```
+
+
+## Inject comments in quiz feedback
+
+This is useful for quizzes where feedback is given by *question*.
+
+```{r}
+system.file("js", "inject_manual_grading_comments.js", package = "gradewrangler") %>% 
+  read_file() %>% 
+  clipr::write_clip()
+```
+
+
+```{r}
+copy_manual_grading_comments <- function(comments_by_question, moodle_names) {
+  comments_by_question %>% 
+    pwalk(function(idx, question, contents) {
+      readline(glue::glue("{idx} ({question}): ready to copy? "))
+      contents %>% 
+        consolidate_gradescope_table() %>% 
+        left_join(moodle_names, by = c("Name" = "roster_name")) %>% 
+        mutate(Name = if_else(is.na(moodle_name), Name, moodle_name)) %>% 
+        rowwise() %>% 
+        mutate(comments = markdown::renderMarkdown(text = comments)) %>% 
+        ungroup() %>% 
+        jsonlite::toJSON(dataframe = "rows") %>% 
+        clipr::write_clip()
+    })
+}
+
+copy_manual_grading_comments(
+  gradescope_data,
+  moodle_names = read_csv(
+    file.path(root_dir, '../moodle_names.csv'),
+    col_types = cols(.default = col_character()))
+)
+```
+
+
