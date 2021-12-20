@@ -1,0 +1,123 @@
+---
+title: "m2g"
+author: "K Arnold"
+date: "12/17/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(gradewrangler)
+```
+
+## Setup session
+
+Where do you want to hold the student data?
+
+```{r}
+root <- "~/Courses/cs106/student_data/21fa/quiz11"
+response_dir <- file.path(root, "responses")
+if (!dir.exists(response_dir)) dir.create(response_dir, recursive = TRUE)
+
+md_dir <- file.path(root, "md")
+pdfs_dir <- file.path(root, "pdf")
+if (!dir.exists(md_dir)) dir.create(md_dir)
+if (!dir.exists(pdfs_dir)) dir.create(pdfs_dir)
+```
+
+
+## Scrape Moodle
+
+Run this to copy the Moodle scraper JavaScript to the clipboard.
+
+```{r}
+system.file("js", "scrape_moodle_manual_grading.js", package = "gradewrangler") %>% 
+  read_file() %>% 
+  clipr::write_clip()
+```
+
+Run the result on each Manual Grading page. Run the following after each time to write it to a JSON file.
+
+```{r}
+while(TRUE) {
+  ret = readline("Next name? ")
+  if(ret == '') break
+  clipr::read_clip() %>% write_file(file = file.path(response_dir, paste0(ret, '.json')))
+}
+```
+
+
+```{r}
+# TODO: This doesn't actually work because `jsonlite` doesn't round-trip scalars correctly (they come out as length-1 vectors).
+if(FALSE) {
+  data <- clipr::read_clip() %>% jsonlite::parse_json()
+  jsonlite::write_json(
+    data$responses,
+    file.path(response_dir, paste0(data$questionNum, "-", data$questionTitle, '.json'))
+  )
+}
+```
+
+## Load data
+
+```{r}
+question_type = tribble(
+  ~question_num, ~type,
+  1, "text",
+  2, "py"
+)
+responses <- load_moodle_responses(response_dir, question_type = question_type)
+```
+
+## Write PDFs
+
+```{r}
+response_to_md <- function(response, type) {
+  if_else(type == "text", response, as.character(glue::glue("```{type}\n{response}\n```")))
+}
+
+responses_to_markdown <- function(responses) {
+  responses %>% 
+    # Ensure that the dataframe is ungrouped.
+    ungroup() %>% 
+    # Add in a template user.
+    bind_rows(tibble(student = "0template", attempt_num = 1L, id = "") %>%
+                left_join(responses %>% distinct(question_num, question_name), by = character(0))) %>% 
+    # Fill in any missing student-response groups.
+    complete(student, nesting(question_name, question_num), fill = list(contents="MISSING", type = "text")) %>% 
+    # Sort by attempt.
+    arrange(student, question_num, attempt_num) %>% 
+    # Convert each response to Markdown. (Should this be rowwise()? is vectorized ok?)
+    group_by(student, id, question_num, question_name, attempt_num) %>% 
+    summarize(body = response_to_md(contents, type), .groups = "drop") %>%
+    # Consolidate all attempts for each question.
+    group_by(student, id, question_num, question_name) %>% 
+    summarize(body = glue::glue("### Attempt {attempt_num}\n\n{body}\n") %>% paste0(collapse = "\n"), .groups = "drop") %>% 
+    # Consolidate all questions for each student
+    arrange(student, question_num) %>% 
+    group_by(student, id) %>% 
+    mutate(display_name = if_else(student == "0template", "", student)) %>% 
+    summarise(md = str_c(
+      paste0("# Name: ", display_name[[1]], "\n\nID: ", id[[1]], "\\newpage\n\n"),
+      glue::glue("## {question_num} - {question_name}\n\n{body}\n\\newpage\n\n") %>% paste0(collapse = "\n")
+    ), .groups = "drop")
+}
+
+
+markdown_to_pdf <- function(responses) {
+  responses %>% 
+    rowwise() %>% 
+    mutate(
+      # Note: pandoc needs tilde-expanded paths.
+      filename = normalizePath(file.path(md_dir, glue::glue("{student}.md")), mustWork = FALSE),
+      pdf_filename = normalizePath(file.path(pdfs_dir, glue::glue("{student}.pdf")), mustWork = FALSE),
+      res = write_lines(md, filename),
+      res2 = sys::exec_wait("pandoc", c("-V", "geometry:margin=.5in,paperwidth=10in,paperheight=15in", "-f", "markdown", "-t", "pdf", filename, "-o", pdf_filename))
+      )
+}
+
+responses %>% responses_to_markdown() %>% markdown_to_pdf()
+
+```
+
